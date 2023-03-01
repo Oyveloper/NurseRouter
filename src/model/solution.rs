@@ -10,7 +10,7 @@ pub struct Solution {
 
 #[derive(Debug)]
 pub struct SolutionEvaluation {
-    pub total_travel_time: f32,
+    pub total_travel_time: f64,
     pub number_of_time_window_violations: u32,
     pub number_of_return_time_violations: u32,
     pub sum_capacity_violation: u32,
@@ -19,7 +19,11 @@ pub struct SolutionEvaluation {
 impl Solution {
     pub fn random(problem_instance: Ref<ProblemInstance>) -> Solution {
         let mut patients: Vec<String> = problem_instance.patients.keys().cloned().collect();
-        patients.shuffle(&mut rand::thread_rng());
+        // patients.shuffle(&mut rand::thread_rng());
+        patients.sort_by_key(|patient_id| {
+            let patient = &problem_instance.patients[patient_id];
+            patient.end_time.round() as u32
+        });
         let mut routes = Vec::new();
 
         for _ in 0..problem_instance.nbr_nurses {
@@ -34,6 +38,14 @@ impl Solution {
             if i >= problem_instance.nbr_nurses as usize {
                 i = 0;
             }
+        }
+
+        for route in &mut routes {
+            route.shuffle(&mut rand::thread_rng());
+            // route.sort_by_key(|patient_id| {
+            //     let patient = &problem_instance.patients[patient_id];
+            //     patient.end_time.round() as u32
+            // });
         }
 
         Solution { routes }
@@ -54,7 +66,7 @@ impl Solution {
                 //Travel to next stop
                 let patient_index = patient_id.parse::<u32>().unwrap() as usize;
                 let travel_time = problem_instance.travel_times[prev_patient_index][patient_index];
-                total_travel_time += travel_time;
+                total_travel_time += travel_time as f64;
 
                 // Increment time
                 t += travel_time;
@@ -81,7 +93,7 @@ impl Solution {
 
             // Also calculate time to get back to depot
             let travel_time = problem_instance.travel_times[prev_patient_index][0];
-            total_travel_time += travel_time;
+            total_travel_time += travel_time as f64;
             t += travel_time;
 
             // Check return violation
@@ -126,13 +138,6 @@ impl fmt::Debug for Solution {
 
 pub fn is_solution_valid(solution: &Solution, problem_instance: Ref<ProblemInstance>) -> bool {
     if solution.routes.len() != problem_instance.nbr_nurses as usize {
-        return false;
-    }
-
-    let all_patients_in_solution = solution.routes.iter().flatten().collect::<Vec<_>>();
-    let all_patients_in_problem_instance = problem_instance.patients.keys().collect::<Vec<_>>();
-
-    if all_patients_in_solution != all_patients_in_problem_instance {
         return false;
     }
 

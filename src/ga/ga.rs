@@ -1,4 +1,3 @@
-use indicatif::ProgressIterator;
 use std::{
     cell::{Ref, RefCell},
     rc::Rc,
@@ -23,15 +22,17 @@ pub enum MutationType {
     InRouteInvert,
     InRouteScramble,
     CrossRouteSwap,
+    CrossRouteInsert,
 }
 
 impl Distribution<MutationType> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> MutationType {
-        match rng.gen_range(0..4) {
+        match rng.gen_range(0..5) {
             0 => MutationType::InRouteSwap,
             1 => MutationType::InRouteInvert,
             2 => MutationType::InRouteScramble,
             3 => MutationType::CrossRouteSwap,
+            4 => MutationType::CrossRouteInsert,
             _ => panic!("Invalid mutation type"),
         }
     }
@@ -42,13 +43,13 @@ pub struct NurseRouteGA {
     population_size: u32,
     offspring_size: u32,
     lin_rank_pressure: f32,
-    evaluation_fn: fn(&Solution, Ref<ProblemInstance>) -> f32,
+    evaluation_fn: fn(&Solution, Ref<ProblemInstance>) -> f64,
     problem_instance: Rc<RefCell<ProblemInstance>>,
-    population_evaluation: Vec<f32>,
+    population_evaluation: Vec<f64>,
     mutation_probability: f64,
     crossover_probability: f64,
-    best_fitness_stats: Vec<f32>,
-    avg_fitness_stats: Vec<f32>,
+    best_fitness_stats: Vec<f64>,
+    avg_fitness_stats: Vec<f64>,
 }
 
 impl NurseRouteGA {
@@ -56,7 +57,7 @@ impl NurseRouteGA {
         population_size: u32,
         offspring_size: u32,
         lin_rank_pressure: f32,
-        evaluation_fn: fn(&Solution, Ref<ProblemInstance>) -> f32,
+        evaluation_fn: fn(&Solution, Ref<ProblemInstance>) -> f64,
         problem_instance: Rc<RefCell<ProblemInstance>>,
         mutation_probability: f64,
         crossover_probability: f64,
@@ -92,37 +93,33 @@ impl NurseRouteGA {
     }
 
     pub fn get_best_solution(&mut self) -> Solution {
-        self.population.sort_by(|a, b| {
-            (self.evaluation_fn)(a, self.problem_instance.borrow())
-                .partial_cmp(&(self.evaluation_fn)(b, self.problem_instance.borrow()))
-                .unwrap()
-        });
-
-        self.population.last().unwrap().clone()
+        self.population
+            .iter()
+            .max_by_key(|s| (self.evaluation_fn)(s, self.problem_instance.borrow()) as i32)
+            .unwrap()
+            .clone()
     }
 
     pub fn run(&mut self, nbr_generations: i32) {
-        for _ in (0..nbr_generations) {
+        for _ in 0..nbr_generations {
             // The generation loop
             let parents = self.parent_selection();
             self.best_fitness_stats.push(
                 self.population_evaluation
                     .iter()
-                    .fold(f32::NEG_INFINITY, |a, &b| a.max(b)),
+                    .fold(f64::NEG_INFINITY, |a: f64, &b| a.max(b)),
             );
 
             self.avg_fitness_stats.push(
-                self.population_evaluation
-                    .iter()
-                    .fold(0.0, |a, &b| a + b as f32)
-                    / self.population_size as f32,
+                self.population_evaluation.iter().fold(0.0, |a, &b| a + b)
+                    / self.population_size as f64,
             );
             let offspring = self.create_offspring(&parents);
             self.population = self.survivor_selection(offspring);
         }
     }
 
-    pub fn get_fitness_history(&self) -> (Vec<f32>, Vec<f32>) {
+    pub fn get_fitness_history(&self) -> (Vec<f64>, Vec<f64>) {
         (
             self.best_fitness_stats.clone(),
             self.avg_fitness_stats.clone(),
@@ -149,7 +146,7 @@ impl NurseRouteGA {
             .population
             .iter()
             .map(|s| (self.evaluation_fn)(s, self.problem_instance.borrow()))
-            .collect::<Vec<f32>>();
+            .collect::<Vec<f64>>();
     }
 
     fn parent_selection(&mut self) -> Vec<Solution> {
@@ -192,7 +189,7 @@ impl NurseRouteGA {
         offspring
     }
 
-    fn crossover_change(original: &Solution, other_route: Vec<String>) -> Solution {
+    fn crossover_change(&self, original: &Solution, other_route: Vec<String>) -> Solution {
         let mut routes = Vec::new();
         for route in original.routes.clone() {
             let mut r1 = Vec::new();
@@ -205,13 +202,19 @@ impl NurseRouteGA {
         }
 
         for patient in other_route {
-            let shortest_idx = routes
+            let least_travel_time_added_idx = routes
                 .iter()
+                .map(|r| {
+                    r.last().map_or(0.0, |p| {
+                        self.problem_instance.borrow().travel_times[p.parse::<usize>().unwrap()]
+                            [patient.parse::<usize>().unwrap()]
+                    })
+                })
                 .enumerate()
-                .min_by(|a, b| (a.1.len() as i32).partial_cmp(&(b.1.len() as i32)).unwrap())
+                .min_by_key(|(_, t)| *t as i32)
                 .unwrap()
                 .0;
-            routes[shortest_idx].push(patient);
+            routes[least_travel_time_added_idx].push(patient);
         }
 
         Solution { routes }
@@ -228,8 +231,8 @@ impl NurseRouteGA {
                 let p1_route = p1.routes[rng.gen_range(0..nbr_nurses) as usize].clone();
                 let p2_route = p2.routes[rng.gen_range(0..nbr_nurses) as usize].clone();
 
-                let c1 = NurseRouteGA::crossover_change(p1, p2_route);
-                let c2 = NurseRouteGA::crossover_change(p2, p1_route);
+                let c1 = self.crossover_change(p1, p2_route);
+                let c2 = self.crossover_change(p2, p1_route);
 
                 [c1, c2]
             }
@@ -241,7 +244,7 @@ impl NurseRouteGA {
             let mut rng = rand::thread_rng();
             let mut individual = individual.clone();
 
-            let number_of_mutations = rng.gen_range(0..5);
+            let number_of_mutations = 1; //rng.gen_range(0..5);
             for _ in 0..number_of_mutations {
                 let mutation_type: MutationType = rng.gen();
                 individual = self.perform_mutation(individual, mutation_type);
@@ -320,7 +323,7 @@ impl NurseRouteGA {
 
                 for i in 0..slice.len() {
                     if i >= start_index && i <= end_index {
-                        new_route[start_index + i] = slice[0].clone();
+                        new_route[start_index + i] = slice[i].clone();
                     }
                 }
 
@@ -345,18 +348,38 @@ impl NurseRouteGA {
                 let patient1_idx = rng.gen_range(0..route1.len()) as usize;
                 let patient2_idx = rng.gen_range(0..route2.len()) as usize;
 
-                let mut route_1_transfer = vec![];
-                let mut route_2_transfer = vec![];
+                let patient1 = route1.remove(patient1_idx);
+                let patient2 = route2.remove(patient2_idx);
 
-                while route1.len() > patient1_idx {
-                    route_2_transfer.push(route1.pop().unwrap());
-                }
-                while route2.len() > patient2_idx {
-                    route_1_transfer.push(route2.pop().unwrap());
-                }
+                route1.push(patient2);
+                route2.push(patient1);
 
-                route1.append(&mut route_1_transfer);
-                route2.append(&mut route_2_transfer);
+                individual.routes[route1_idx] = route1;
+                individual.routes[route2_idx] = route2;
+
+                individual
+            }
+
+            MutationType::CrossRouteInsert => {
+                let route1_idx =
+                    rng.gen_range(0..self.problem_instance.borrow().nbr_nurses) as usize;
+                let route2_idx = (0..self.problem_instance.borrow().nbr_nurses)
+                    .filter(|&x| x != route1_idx as u32)
+                    .collect::<Vec<_>>()
+                    [rng.gen_range(0..self.problem_instance.borrow().nbr_nurses - 1) as usize]
+                    as usize;
+
+                let mut route1 = individual.routes[route1_idx].clone();
+                let mut route2 = individual.routes[route2_idx].clone();
+
+                if route1.len() < 1 {
+                    return individual;
+                }
+                let cutoff_position = rng.gen_range(0..route1.len()) as usize;
+
+                while route1.len() > cutoff_position {
+                    route2.push(route1.pop().unwrap());
+                }
 
                 individual.routes[route1_idx] = route1;
                 individual.routes[route2_idx] = route2;
