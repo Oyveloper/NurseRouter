@@ -1,43 +1,70 @@
 mod ga;
 mod model;
+mod solver;
 mod util;
-use crossbeam_channel::unbounded;
-use indicatif::ProgressBar;
-use std::cell::{Ref, RefCell};
+
+use solver::solver::solve_problem;
 use std::env::args;
-use std::rc::Rc;
-use std::sync::mpsc;
-use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use ga::ga::NurseRouteGA;
-use model::problem_instance::{load_problem_instance, ProblemInstance};
-use model::solution::Solution;
+use model::problem_instance::ProblemInstance;
+use model::solution::{Solution, SolutionFitness};
 
+use crate::model::problem_instance::load_problem_instance;
 use crate::model::solution::is_solution_valid;
-use plotters::prelude::*;
+use crate::solver::solver::{SolverConfig, SolverResult};
+use crate::util::output::{plot_histories, print_solution, save_solution_for_plotting};
 
-const PENALTY: f64 = 4000.0;
-const MUTATION_PROBABILITY: f64 = 0.00005;
-const CROSSOVER_PROBABILITY: f64 = 0.998;
-const POPULATION_SIZE: u32 = 200;
-const OFFSPRING_SIZE: u32 = 200;
-const LIN_RANK_PREASSURE: f32 = 1.998;
-const NUMBER_OF_GENERATIONS: i32 = 25;
-const NBR_THREADS: usize = 25;
-const NBR_EPOCHS: usize = 40;
-const NBR_MIGRANTS: u32 = 2;
+const BASE_PENALTY: f64 = 500.0;
+const INVALID_FRACTION: f64 = 0.0;
+const UNPENALZED_POPULATION_FRACTION: f64 = 0.2;
+const MUTATION_PROBABILITY: f64 = 0.05;
+const CROSSOVER_PROBABILITY: f64 = 0.4;
+const POPULATION_SIZE: u32 = 40;
+const GENERATION_GAP: u32 = 10;
+const LIN_RANK_PREASSURE: f32 = 1.90;
+const NBR_GENERATIONS: i32 = 40;
+const NBR_THREADS: usize = 10;
+const NBR_EPOCHS: usize = 400;
+const NBR_MIGRANTS: u32 = 5;
 
-fn eval(solution: &Solution, problem_instance: Ref<ProblemInstance>) -> f64 {
+const LARGE_NEIGHBORHOOD_IMPROVE_PROBABILITY: f64 = 0.1;
+const LOCAL_SEARCH_PROBABILITY: f64 = 0.4;
+const LOCAL_SEARCH_ITERS: usize = 10;
+
+const RANDOM_OFFSPRING_VARIATION_LIMIT: f64 = 0.001;
+const RANDOM_OFFSPRING_VARIATION_WINDOW_SIZE: i32 = 500;
+
+fn eval(
+    solution: &Solution,
+    problem_instance: &ProblemInstance,
+    violation_penalty: f64,
+) -> SolutionFitness {
     let evaluation = solution.evaluation(problem_instance);
 
-    -(evaluation.total_travel_time
-        + PENALTY
-            * (evaluation.number_of_time_window_violations as f64
-                + evaluation.number_of_return_time_violations as f64
-                + evaluation.sum_capacity_violation as f64))
+    let unpenalized = -evaluation.total_travel_time;
+
+    let penalty = violation_penalty
+        * (evaluation.number_of_time_window_violations as f64
+            + evaluation.number_of_return_time_violations as f64
+            + evaluation.sum_capacity_violation as f64);
+
+    let penalized = unpenalized - penalty;
+
+    let score = if solution.force_valid {
+        penalized
+    } else {
+        unpenalized
+    };
+
+    SolutionFitness {
+        penalized,
+        unpenalized,
+        score,
+    }
 }
 
-fn _travel_time(solution: &Solution, problem_instance: Ref<ProblemInstance>) -> f64 {
+fn _travel_time(solution: &Solution, problem_instance: &ProblemInstance) -> f64 {
     let evaluation = solution.evaluation(problem_instance);
 
     return evaluation.total_travel_time;
@@ -50,137 +77,60 @@ fn main() {
         .parse::<u32>()
         .unwrap();
     println!("Problem number: {}", problem_number);
-    let problem_instance = Rc::new(RefCell::new(load_problem_instance(
-        format!("assets/instances/train_{}.json", problem_number).as_str(),
-    )));
 
-    let (history_sender, history_receiver) = mpsc::channel();
-    let (best_sender, best_receiver) = mpsc::channel();
+    let problem_path = format!("assets/instances/train_{}.json", problem_number);
 
-    let mut channels = Vec::new();
+    let config = SolverConfig {
+        violation_penalty: BASE_PENALTY,
+        invalid_fraction: INVALID_FRACTION,
+        unpenalized_population_fraction: UNPENALZED_POPULATION_FRACTION,
+        mutation_probability: MUTATION_PROBABILITY,
+        crossover_probability: CROSSOVER_PROBABILITY,
+        population_size: POPULATION_SIZE,
+        generation_gap: GENERATION_GAP,
+        lin_rank_preassure: LIN_RANK_PREASSURE,
+        nbr_generations: NBR_GENERATIONS,
+        nbr_epochs: NBR_EPOCHS,
+        nbr_migrants: NBR_MIGRANTS,
+        large_neighborhood_improve_probability: LARGE_NEIGHBORHOOD_IMPROVE_PROBABILITY,
+        local_search_probability: LOCAL_SEARCH_PROBABILITY,
+        local_search_iters: LOCAL_SEARCH_ITERS,
+        random_offspring_variation_limit: RANDOM_OFFSPRING_VARIATION_LIMIT,
+        random_offspring_variation_window_size: RANDOM_OFFSPRING_VARIATION_WINDOW_SIZE,
+        nbr_threads: NBR_THREADS,
+        problem_instance_location: problem_path.clone(),
+        eval,
+    };
 
-    for _ in 0..NBR_THREADS {
-        let (sender, receiver) = unbounded::<Vec<Solution>>();
-        channels.push((sender, receiver));
-    }
+    let problem_instance = load_problem_instance(problem_path.as_str());
 
-    let (progress_sender, progress_receiver) = mpsc::channel();
+    let SolverResult(best_solution, histories) = solve_problem(config.clone());
 
-    let mut threads = Vec::new();
+    let best_solution_score = eval(&best_solution, &problem_instance, 1000.0).penalized;
 
-    for i in 0..NBR_THREADS {
-        let (_, receiver) = channels[i].clone();
-        let next_i = if i == NBR_THREADS - 1 { 0 } else { i + 1 };
-        let (sender, _) = channels[next_i].clone();
-        let history_sender_clone = history_sender.clone();
-        let best_sender_clone = best_sender.clone();
-        let progress_sender_clone = progress_sender.clone();
-
-        let t = thread::spawn(move || {
-            // Load problem instance for each thread
-            // TODO: make it possible to share this
-            let problem_instance_t = Rc::new(RefCell::new(load_problem_instance(
-                format!("assets/instances/train_{}.json", problem_number).as_str(),
-            )));
-
-            let mut algo = NurseRouteGA::new(
-                POPULATION_SIZE,
-                OFFSPRING_SIZE,
-                LIN_RANK_PREASSURE,
-                eval,
-                problem_instance_t,
-                MUTATION_PROBABILITY,
-                CROSSOVER_PROBABILITY,
-            );
-
-            for _ in 0..NBR_EPOCHS {
-                algo.run(NUMBER_OF_GENERATIONS);
-                progress_sender_clone.send(()).unwrap();
-
-                sender.send(algo.emigrate(NBR_MIGRANTS)).unwrap();
-                let imigrants = receiver.recv();
-                match imigrants {
-                    Ok(ref imigrants) => {
-                        algo.immigrate(imigrants.clone());
-                    }
-                    Err(_) => {}
-                }
-            }
-
-            history_sender_clone
-                .send(algo.get_fitness_history())
-                .unwrap();
-
-            best_sender_clone.send(algo.get_best_solution()).unwrap();
-        });
-
-        threads.push(t);
-    }
-
-    let mut progress_count = 0;
-    let target_progress_count = NBR_THREADS * NBR_EPOCHS;
-
-    let progress = ProgressBar::new(target_progress_count as u64);
-    while progress_count < target_progress_count {
-        progress_receiver.recv().unwrap();
-        progress.inc(1);
-        progress_count += 1;
-    }
-
-    for t in threads {
-        t.join().unwrap();
-    }
-    let root_area = BitMapBackend::new("images/GA_plot.png", (1920, 1080)).into_drawing_area();
-    root_area.fill(&WHITE).unwrap();
-
-    let mut ctx = ChartBuilder::on(&root_area)
-        .set_label_area_size(LabelAreaPosition::Left, 40)
-        .set_label_area_size(LabelAreaPosition::Bottom, 40)
-        .caption("Fitness", ("sans-serif", 40))
-        .build_cartesian_2d(
-            0.0..((NUMBER_OF_GENERATIONS * NBR_EPOCHS as i32) as f64),
-            0.0..5000.0,
-        )
-        .unwrap();
-
-    ctx.configure_mesh().draw().unwrap();
-
-    let mut best_solutions = Vec::new();
-
-    for _ in 0..NBR_THREADS {
-        let history = history_receiver.recv().unwrap();
-        let (best, avg) = history;
-
-        let best_solution = best_receiver.recv().unwrap();
-        best_solutions.push(best_solution);
-
-        ctx.draw_series(LineSeries::new(
-            best.iter()
-                .enumerate()
-                .map(|(i, v)| (i as f64, -v.clone() as f64)),
-            &BLUE,
-        ))
-        .unwrap();
-
-        ctx.draw_series(LineSeries::new(
-            avg.iter()
-                .enumerate()
-                .map(|(i, v)| (i as f64, -v.clone() as f64)),
-            &RED,
-        ))
-        .unwrap();
-    }
-
-    let best_solution = best_solutions
-        .iter()
-        .max_by_key(|s| eval(s, problem_instance.borrow()) as i32)
-        .unwrap();
-
-    println!("{:#?}", best_solution);
-    println!("{:#?}", best_solution.evaluation(problem_instance.borrow()));
-    println!("{:#?}", eval(best_solution, problem_instance.borrow()));
+    print_solution(&best_solution, &problem_instance);
+    // println!("{:#?}", best_solution.evaluation(&problem_instance));
+    println!("{:#?}", best_solution_score);
     println!(
         "{:#?}",
-        is_solution_valid(best_solution, problem_instance.borrow())
+        is_solution_valid(&best_solution, &problem_instance)
+    );
+
+    plot_histories(
+        histories,
+        (NBR_GENERATIONS * NBR_EPOCHS as i32) as f64,
+        5000.0,
+    );
+
+    // prepare for plotting
+    save_solution_for_plotting(
+        &best_solution,
+        best_solution_score,
+        config,
+        &format!(
+            "images/plot_data/solution-{}-{:?}.json",
+            problem_number,
+            SystemTime::now().duration_since(UNIX_EPOCH)
+        ),
     );
 }

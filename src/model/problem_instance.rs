@@ -20,6 +20,7 @@ pub fn load_problem_instance(path: &str) -> ProblemInstance {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProblemInstance {
     pub nbr_nurses: u32,
+    pub benchmark: f64,
     pub capacity_nurse: u32,
     pub depot: Depot,
     pub patients: HashMap<String, Patient>,

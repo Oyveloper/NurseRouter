@@ -2,6 +2,7 @@
     "instance_name": "train_1",
     "nbr_nurses": 25,
     "capacity_nurse": 700,
+    "benchmark": 589.1,
     "depot": {
         "return_time": 3390,
         "x_coord": 40,
