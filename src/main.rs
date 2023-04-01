@@ -23,16 +23,16 @@ const CROSSOVER_PROBABILITY: f64 = 0.4;
 const POPULATION_SIZE: u32 = 40;
 const GENERATION_GAP: u32 = 10;
 const LIN_RANK_PREASSURE: f32 = 1.90;
-const NBR_GENERATIONS: i32 = 40;
+const NBR_GENERATIONS: i32 = 50;
 const NBR_THREADS: usize = 10;
-const NBR_EPOCHS: usize = 400;
+const NBR_EPOCHS: usize = 500;
 const NBR_MIGRANTS: u32 = 5;
 
-const LARGE_NEIGHBORHOOD_IMPROVE_PROBABILITY: f64 = 0.1;
-const LOCAL_SEARCH_PROBABILITY: f64 = 0.4;
+const LARGE_NEIGHBORHOOD_IMPROVE_PROBABILITY: f64 = 0.15;
+const LOCAL_SEARCH_PROBABILITY: f64 = 0.5;
 const LOCAL_SEARCH_ITERS: usize = 10;
 
-const RANDOM_OFFSPRING_VARIATION_LIMIT: f64 = 0.001;
+const RANDOM_OFFSPRING_VARIATION_LIMIT: f64 = 0.01;
 const RANDOM_OFFSPRING_VARIATION_WINDOW_SIZE: i32 = 500;
 
 fn eval(
@@ -78,7 +78,7 @@ fn main() {
         .unwrap();
     println!("Problem number: {}", problem_number);
 
-    let problem_path = format!("assets/instances/train_{}.json", problem_number);
+    let problem_path = format!("assets/instances/test_{}.json", problem_number);
 
     let config = SolverConfig {
         violation_penalty: BASE_PENALTY,

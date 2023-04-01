@@ -2,6 +2,7 @@ import json
 import os
 import glob
 import matplotlib.pyplot as plt
+from numpy import sort
 
 
 def main():
@@ -25,7 +26,7 @@ def main():
     ]
 
     files = glob.glob("images/plot_data/*.json")
-    file_name = max(files, key=os.path.getctime)
+    file_name = sorted(files, key=os.path.getctime)[-3]
     problem = file_name.split("-")[1]
     print(file_name)
     with open(file_name) as f:

@@ -138,7 +138,7 @@ pub fn solve_problem(config: SolverConfig) -> SolverResult {
                 }
 
                 for _ in 0..senders.len() {
-                    if rand::thread_rng().gen_bool(0.2) {
+                    if rand::thread_rng().gen_bool(0.04) {
                         let im = receiver.recv().unwrap();
                         algo._immigrate(im);
                     }
